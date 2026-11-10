@@ -148,6 +148,12 @@
   footer{background:var(--navy);padding:22px 16px;text-align:center}
   footer img{width:min(230px,60vw);height:auto;display:block;margin:0 auto}
   footer p{color:var(--mist);opacity:.75;font-size:.78rem;margin:10px 0 0}
+  .banner{border-radius:var(--radius);padding:14px 18px;margin-bottom:18px;font-size:.9rem;line-height:1.5;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+  .banner.warn{background:#fff3df;color:#6b4500;border:1px solid #f1d9a8}
+  .banner.info{background:var(--navy-soft);color:var(--navy);border:1px solid #cdd5e4}
+  .save-status{font-family:Inter,system-ui,sans-serif;font-weight:500;font-size:.78rem;color:var(--muted);margin-left:8px}
+  .save-status.ok{color:var(--ok)}
+  .save-status.err{color:var(--danger)}
   .hidden{display:none!important}
 </style>
 </head>
@@ -232,13 +238,14 @@
   <section class="panel" id="panel-registros">
     <div class="card narrow lock" id="lock">
       <h2>Área restrita</h2>
-      <p>Digite o PIN do Departamento de Missões.</p>
-      <input type="password" id="pin" inputmode="numeric" maxlength="12" autocomplete="off">
+      <p>Digite a senha do Departamento de Missões.</p>
+      <input type="password" id="pin" maxlength="60" autocomplete="current-password">
       <div class="err" id="pin-err" style="text-align:center"></div>
       <button class="btn btn-primary" id="btn-unlock">Entrar</button>
     </div>
 
     <div id="admin" class="hidden">
+      <div class="banner hidden" id="banner"></div>
       <div class="stats">
         <div class="stat"><small>Ofertantes</small><b id="st-qtd">0</b></div>
         <div class="stat"><small>Total mensal compromissado</small><b id="st-total">R$ 0,00</b></div>
@@ -279,7 +286,7 @@
       </div>
 
       <details class="box" open>
-        <summary>Mensagem mensal</summary>
+        <summary><span>Mensagem mensal <span class="save-status" id="save-status"></span></span></summary>
         <div class="inner grid2">
           <div>
             <div class="field">
@@ -311,7 +318,7 @@
                 <label for="cfg-pix">Chave Pix para ofertas</label>
                 <input type="text" id="cfg-pix" placeholder="CNPJ, e-mail ou telefone">
               </div>
-              <div class="field">
+              <div class="field" id="pin-field">
                 <label for="cfg-pin">Novo PIN da área restrita</label>
                 <input type="password" id="cfg-pin" inputmode="numeric" maxlength="12" placeholder="Deixe em branco para manter">
               </div>
@@ -321,10 +328,6 @@
               <div class="field">
                 <label>Armazenamento <span class="mode" id="mode-lbl"><i></i><span></span></span></label>
                 <p class="note" id="mode-note"></p>
-              </div>
-              <div class="field">
-                <label for="cfg-key">Chave secreta da planilha <span class="hint">— só no modo Google Planilhas</span></label>
-                <input type="password" id="cfg-key" placeholder="A mesma definida no Apps Script">
               </div>
               <div style="display:flex;gap:8px;flex-wrap:wrap">
                 <button class="btn btn-ghost btn-sm" id="btn-recarregar">Recarregar registros</button>
@@ -362,15 +365,15 @@
 /* =====================================================================
    CONFIGURAÇÃO
    ---------------------------------------------------------------------
-   SCRIPT_URL vazio  -> os dados ficam salvos só neste aparelho/navegador
-                        (bom para um tablet/celular na mesa de missões).
-   SCRIPT_URL preenchido -> cada oferta é gravada numa Google Planilha,
-                        então as pessoas podem preencher do próprio celular.
-                        Veja o arquivo "apps-script-missoes.gs".
+   SCRIPT_URL preenchido -> cadastros, mensagem e configurações ficam
+       na Google Planilha e aparecem iguais em qualquer aparelho.
+       A senha da área restrita é a CHAVE_SECRETA do Apps Script.
+   SCRIPT_URL vazio -> tudo fica salvo só no navegador deste aparelho
+       e a senha é o PIN_LOCAL abaixo.
    ===================================================================== */
 const CONFIG = {
-  SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbwgfzpP_zUTQ2Dc0ryBu_ru_9r7YWx_mt0yyvwU_CZjVf3nfTc0Rrrwcx_Ma6gHfB5l/exec',          // ex.: 'https://script.google.com/macros/s/XXXX/exec'
-  PIN_PADRAO: '1701'       // troque nas Configurações depois do 1º acesso
+  SCRIPT_URL: 'https://script.google.com/macros/s/AKfycbyBiMi2u3RX6t0xF0XxjrgljQ-9h4hgkK0WINuzDnJWyLetrLa7kewlw5mwxIdUx6-e/exec',          // ex.: 'https://script.google.com/macros/s/XXXX/exec'
+  PIN_LOCAL: '1701'
 };
 
 const DEFAULT_TEMPLATE =
@@ -391,7 +394,8 @@ const $ = s => document.querySelector(s);
 const $$ = s => [...document.querySelectorAll(s)];
 const LS = {
   get(k, d){ try{ const v = localStorage.getItem('missoes_'+k); return v===null ? d : JSON.parse(v); }catch(e){ return d; } },
-  set(k, v){ try{ localStorage.setItem('missoes_'+k, JSON.stringify(v)); }catch(e){} }
+  set(k, v){ try{ localStorage.setItem('missoes_'+k, JSON.stringify(v)); }catch(e){} },
+  del(k){ try{ localStorage.removeItem('missoes_'+k); }catch(e){} }
 };
 const brl = n => (Number(n)||0).toLocaleString('pt-BR',{style:'currency',currency:'BRL'});
 const esc = s => String(s??'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -406,25 +410,62 @@ const fmtData = iso => { const d = new Date(iso); return isNaN(d) ? '—' : d.to
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,7);
 const capitalizar = s => s.trim().replace(/\s+/g,' ').toLowerCase().replace(/(^|\s|-)(\p{L})/gu,(m,a,b)=>a+b.toUpperCase())
                           .replace(/\b(Da|De|Do|Das|Dos|E)\b/g, m => m.toLowerCase());
+const porNome = (a,b) => (a.nome+' '+a.sobrenome).localeCompare(b.nome+' '+b.sobrenome,'pt-BR');
 
-function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2600); }
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show'); clearTimeout(t._h); t._h=setTimeout(()=>t.classList.remove('show'),2800); }
 
 /* ------------------------- estado ------------------------- */
-let cfg = Object.assign({ pin: CONFIG.PIN_PADRAO, pix:'', key:'', template: DEFAULT_TEMPLATE, informativo:'' }, LS.get('cfg', {}));
-if(String(cfg.pin)==='1234') cfg.pin = CONFIG.PIN_PADRAO; // substitui o PIN antigo
-let registros = LS.get('registros', []);
-let filtro = 'todos';
 const remoto = () => !!CONFIG.SCRIPT_URL;
+// mensagem/pix: no modo planilha vêm do servidor; aqui é só o cache do aparelho
+let cfg = Object.assign({ template: DEFAULT_TEMPLATE, informativo:'', pix:'' }, LS.get('cfg', {}));
+delete cfg.key;
+let pinLocal = LS.get('pin', null) || (String(cfg.pin||'')!=='' && cfg.pin!=='1234' ? cfg.pin : CONFIG.PIN_LOCAL);
+delete cfg.pin;
+let senha = remoto() ? LS.get('senha', '') : '';
+// cadastros feitos neste aparelho no modo local (ou antes de ligar a planilha)
+let locais = LS.get('registros', []);
+let registros = remoto() ? LS.get('cache_remoto', []) : locais;
+let filtro = 'todos';
 
-function salvarCfg(){ LS.set('cfg', cfg); }
-function salvarLocal(){ LS.set('registros', registros); }
+function salvarCfgLocal(){ LS.set('cfg', cfg); }
+function salvarRegistros(){
+  if(remoto()) LS.set('cache_remoto', registros);
+  else { locais = registros; LS.set('registros', registros); }
+}
+
+/* ------------------------- Google Planilhas ------------------------- */
+async function post(payload){
+  await fetch(CONFIG.SCRIPT_URL, { method:'POST', mode:'no-cors', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(payload) });
+}
+async function buscarServidor(chave){
+  const r = await fetch(CONFIG.SCRIPT_URL + '?key=' + encodeURIComponent(chave) + '&t=' + Date.now());
+  return r.json();
+}
+function normalizar(x){
+  return { ...x, id:String(x.id), nome:String(x.nome||''), sobrenome:String(x.sobrenome||''),
+           telefone: digits(x.telefone), valor: Number(x.valor)||0, ultimoEnvio: String(x.ultimoEnvio||'') };
+}
+async function sincronizar(){
+  const j = await buscarServidor(senha);
+  if(!j.ok) throw new Error('senha');
+  registros = (j.registros||[]).map(normalizar);
+  salvarRegistros();
+  const c = j.config || {};
+  const faltando = {};
+  ['template','informativo','pix'].forEach(k => {
+    if(c[k] !== undefined && c[k] !== '') cfg[k] = String(c[k]);
+    else if(cfg[k]) faltando[k] = cfg[k];             // 1º uso: leva para a planilha o que já estava neste aparelho
+  });
+  salvarCfgLocal();
+  if(Object.keys(faltando).length) post({ acao:'config', key:senha, config:{ template:cfg.template, informativo:cfg.informativo, pix:cfg.pix } }).catch(()=>{});
+  return true;
+}
 
 /* ------------------------- abas ------------------------- */
 $$('.tab').forEach(b => b.addEventListener('click', () => {
   $$('.tab').forEach(x => x.setAttribute('aria-selected', x===b));
   $$('.panel').forEach(p => p.classList.toggle('active', p.id==='panel-'+b.dataset.tab));
-  if(b.dataset.tab==='registros' && sessionStorage.getItem('missoes_ok')) abrirAdmin();
-  else if(b.dataset.tab==='registros') setTimeout(()=>$('#pin').focus(),50);
+  if(b.dataset.tab==='registros') entrarAutomatico();
 }));
 
 /* ------------------------- formulário ------------------------- */
@@ -436,17 +477,16 @@ tel.addEventListener('input', () => {
   else if(d.length) v = `(${d}`;
   tel.value = v;
 });
+const parseValor = () => { const d = digits(valor.value); return d ? parseInt(d,10)/100 : 0; };
 valor.addEventListener('input', () => {
   const d = digits(valor.value).replace(/^0+/,'').slice(0,9);
   valor.value = d ? (parseInt(d,10)/100).toLocaleString('pt-BR',{minimumFractionDigits:2}) : '';
   $$('.chip').forEach(c => c.classList.toggle('on', parseValor()===Number(c.dataset.v)));
 });
-const parseValor = () => { const d = digits(valor.value); return d ? parseInt(d,10)/100 : 0; };
 $$('.chip').forEach(c => c.addEventListener('click', () => {
   valor.value = Number(c.dataset.v).toLocaleString('pt-BR',{minimumFractionDigits:2});
   $$('.chip').forEach(x => x.classList.toggle('on', x===c)); setErr('valor','');
 }));
-
 function setErr(id, msg){
   const e = document.querySelector(`.err[data-for="${id}"]`); if(e) e.textContent = msg;
   const i = document.getElementById(id); if(i && i.type!=='checkbox') i.classList.toggle('invalid', !!msg);
@@ -469,8 +509,8 @@ $('#oferta-form').addEventListener('submit', async ev => {
   const reg = { id: uid(), nome, sobrenome, telefone: t, valor: v, criadoEm: new Date().toISOString(), ultimoEnvio: '' };
   const btn = $('#btn-enviar'); btn.disabled = true; btn.textContent = 'Registrando…';
   try{
-    if(remoto()) await post({ acao:'novo', registro: reg });
-    else { registros.push(reg); salvarLocal(); }
+    if(remoto()){ await post({ acao:'novo', registro: reg }); registros.push(reg); LS.set('cache_remoto', registros); }
+    else { registros.push(reg); salvarRegistros(); }
     $('#thanks-nome').textContent = nome;
     $('#thanks-valor').textContent = brl(v);
     $('#form-wrap').classList.add('hidden'); $('#thanks').classList.remove('hidden');
@@ -484,47 +524,103 @@ $('#btn-novo').addEventListener('click', () => {
   $('#thanks').classList.add('hidden'); $('#form-wrap').classList.remove('hidden'); $('#nome').focus();
 });
 
-/* ------------------------- Google Planilhas ------------------------- */
-async function post(payload){
-  await fetch(CONFIG.SCRIPT_URL, { method:'POST', mode:'no-cors', headers:{'Content-Type':'text/plain;charset=utf-8'}, body: JSON.stringify(payload) });
+/* ------------------------- login ------------------------- */
+let logado = false;
+async function entrarAutomatico(){
+  if(logado){ if(remoto()) atualizar(true); return; }
+  if(remoto() && senha){
+    mostrarLock('Conectando…');
+    try{ await sincronizar(); logado = true; abrirAdmin(); return; }
+    catch(e){ if(e.message==='senha'){ senha=''; LS.del('senha'); } }
+  } else if(!remoto() && sessionStorage.getItem('missoes_ok')){ logado = true; abrirAdmin(); return; }
+  mostrarLock();
 }
-async function carregarRemoto(){
-  if(!cfg.key){ toast('Informe a chave secreta da planilha em Configurações.'); return false; }
-  const r = await fetch(CONFIG.SCRIPT_URL + '?key=' + encodeURIComponent(cfg.key));
-  const j = await r.json();
-  if(!j.ok){ toast('Chave secreta inválida.'); return false; }
-  registros = j.registros.map(x => ({ ...x, telefone: digits(x.telefone), valor: Number(x.valor)||0, ultimoEnvio: String(x.ultimoEnvio||'') }));
-  salvarLocal();
-  return true;
+function mostrarLock(status){
+  $('#admin').classList.add('hidden'); $('#lock').classList.remove('hidden');
+  $('#pin-err').textContent = status || '';
+  if(!status) setTimeout(()=>$('#pin').focus(),50);
 }
-
-/* ------------------------- área restrita ------------------------- */
-$('#btn-unlock').addEventListener('click', tentarPin);
-$('#pin').addEventListener('keydown', e => { if(e.key==='Enter') tentarPin(); });
-function tentarPin(){
-  if($('#pin').value === String(cfg.pin)){
-    sessionStorage.setItem('missoes_ok','1'); $('#pin').value=''; $('#pin-err').textContent='';
-    abrirAdmin();
-    
-  } else { $('#pin-err').textContent = 'PIN incorreto.'; }
+$('#btn-unlock').addEventListener('click', tentarSenha);
+$('#pin').addEventListener('keydown', e => { if(e.key==='Enter') tentarSenha(); });
+async function tentarSenha(){
+  const v = $('#pin').value.trim(); if(!v) return;
+  const btn = $('#btn-unlock');
+  if(remoto()){
+    btn.disabled = true; $('#pin-err').textContent = 'Conectando…';
+    try{
+      const j = await buscarServidor(v);
+      if(!j.ok){ $('#pin-err').textContent = 'Senha incorreta.'; return; }
+      senha = v; LS.set('senha', v);
+      await sincronizar();
+    }catch(e){ $('#pin-err').textContent = 'Não foi possível conectar à planilha. Verifique a internet.'; return; }
+    finally{ btn.disabled = false; }
+  } else {
+    if(v !== String(pinLocal)){ $('#pin-err').textContent = 'Senha incorreta.'; return; }
+    sessionStorage.setItem('missoes_ok','1');
+  }
+  $('#pin').value=''; $('#pin-err').textContent=''; logado = true; abrirAdmin();
 }
 $('#btn-sair').addEventListener('click', () => {
-  sessionStorage.removeItem('missoes_ok'); $('#admin').classList.add('hidden'); $('#lock').classList.remove('hidden');
+  logado = false; sessionStorage.removeItem('missoes_ok'); senha=''; LS.del('senha'); mostrarLock();
 });
 
-async function abrirAdmin(){
+/* ------------------------- área restrita ------------------------- */
+function abrirAdmin(){
   $('#lock').classList.add('hidden'); $('#admin').classList.remove('hidden');
-  $('#template').value = cfg.template; $('#informativo').value = cfg.informativo;
-  $('#cfg-pix').value = cfg.pix; $('#cfg-key').value = cfg.key;
+  preencherCampos();
   const ml = $('#mode-lbl');
   ml.classList.toggle('remote', remoto());
-  ml.querySelector('span').textContent = remoto() ? 'Google Planilhas' : 'Neste aparelho';
+  ml.querySelector('span').textContent = remoto() ? 'Google Planilhas' : 'Somente neste aparelho';
   $('#mode-note').textContent = remoto()
-    ? 'As ofertas são gravadas na sua Google Planilha. Use "Recarregar registros" para buscar os novos cadastros.'
-    : 'As ofertas ficam salvas apenas neste navegador. Use este aparelho para coletar os cadastros e faça backups com frequência.';
-  renderAdmin();
-  if(remoto() && cfg.key){ try{ if(await carregarRemoto()) renderAdmin(); }catch(e){ toast('Não foi possível acessar a planilha.'); } }
+    ? 'Cadastros, mensagem e chave Pix ficam salvos na Google Planilha e aparecem iguais em qualquer aparelho. A senha é a CHAVE_SECRETA do Apps Script.'
+    : 'Os dados ficam salvos apenas neste navegador. Para acessar de qualquer aparelho, conecte a Google Planilha (SCRIPT_URL).';
+  $('#pin-field').classList.toggle('hidden', remoto());
+  renderBanner(); renderAdmin();
 }
+function preencherCampos(){
+  const ativo = document.activeElement;
+  if(ativo!==$('#template')) $('#template').value = cfg.template;
+  if(ativo!==$('#informativo')) $('#informativo').value = cfg.informativo;
+  if(ativo!==$('#cfg-pix')) $('#cfg-pix').value = cfg.pix;
+}
+function pendentesDeEnvio(){
+  // cadastros que ficaram só neste aparelho antes da planilha ser ligada
+  if(!remoto()) return [];
+  const ids = new Set(registros.map(r=>String(r.id)));
+  return locais.filter(r => !ids.has(String(r.id)));
+}
+function renderBanner(){
+  const b = $('#banner'), pend = pendentesDeEnvio();
+  if(!remoto()){
+    b.className = 'banner warn';
+    b.innerHTML = '<span><b>Atenção:</b> os dados estão salvos só neste aparelho. Em outro celular ou computador a lista aparece vazia até a Google Planilha ser conectada.</span>';
+  } else if(pend.length){
+    b.className = 'banner info';
+    b.innerHTML = `<span>Encontrei <b>${pend.length}</b> cadastro(s) salvos só neste aparelho. Envie para a planilha para vê-los em qualquer aparelho.</span>
+                   <button class="btn btn-primary btn-sm" id="btn-migrar">Enviar para a planilha</button>`;
+    $('#btn-migrar').onclick = migrar;
+  } else { b.className = 'banner hidden'; b.innerHTML=''; }
+}
+async function migrar(){
+  const pend = pendentesDeEnvio(); if(!pend.length) return;
+  const btn = $('#btn-migrar'); btn.disabled = true; btn.textContent = 'Enviando…';
+  try{
+    await post({ acao:'importar', key:senha, registros: pend });
+    await new Promise(r=>setTimeout(r,1500));
+    await sincronizar();
+    const ids = new Set(registros.map(r=>String(r.id)));
+    locais = locais.filter(r => !ids.has(String(r.id)));
+    LS.set('registros', locais);
+    toast(locais.length ? 'Alguns cadastros não foram enviados. Tente de novo.' : 'Cadastros enviados para a planilha. ✓');
+  }catch(e){ toast('Não foi possível enviar. Verifique a internet.'); }
+  renderBanner(); renderAdmin();
+}
+async function atualizar(silencioso){
+  if(!remoto() || !senha) return;
+  try{ await sincronizar(); preencherCampos(); renderBanner(); renderAdmin(); if(!silencioso) toast('Atualizado. ✓'); }
+  catch(e){ if(e.message==='senha'){ $('#btn-sair').click(); toast('A senha mudou. Entre novamente.'); } else if(!silencioso) toast('Não foi possível acessar a planilha.'); }
+}
+document.addEventListener('visibilitychange', () => { if(!document.hidden && logado) atualizar(true); });
 
 function enviadoEsteMes(r){ return r.ultimoEnvio === mesKey(); }
 
@@ -538,8 +634,7 @@ function renderAdmin(){
   $('#st-bar').style.width = registros.length ? (env/registros.length*100)+'%' : '0';
 
   const q = $('#busca').value.trim().toLowerCase(), qd = digits(q);
-  let lista = [...registros].sort((a,b)=>(a.nome+a.sobrenome).localeCompare(b.nome+b.sobrenome,'pt-BR'));
-  lista = lista.filter(r => {
+  const lista = [...registros].sort(porNome).filter(r => {
     if(filtro==='pend' && enviadoEsteMes(r)) return false;
     if(filtro==='sent' && !enviadoEsteMes(r)) return false;
     if(!q) return true;
@@ -572,12 +667,12 @@ $$('#filtro button').forEach(b => b.addEventListener('click', () => {
 
 $('#tbody').addEventListener('click', async e => {
   const wa = e.target.closest('[data-wa]'), del = e.target.closest('[data-del]');
-  if(wa){ const r = registros.find(x=>x.id===wa.dataset.wa); if(r){ abrirWhatsApp(r); await marcarEnviado(r); renderAdmin(); } }
+  if(wa){ const r = registros.find(x=>String(x.id)===wa.dataset.wa); if(r){ abrirWhatsApp(r); await marcarEnviado(r); renderAdmin(); } }
   if(del){
-    const r = registros.find(x=>x.id===del.dataset.del); if(!r) return;
+    const r = registros.find(x=>String(x.id)===del.dataset.del); if(!r) return;
     if(!confirm(`Excluir o registro de ${r.nome} ${r.sobrenome}?`)) return;
-    registros = registros.filter(x=>x.id!==r.id); salvarLocal();
-    if(remoto()) post({ acao:'excluir', id:r.id, key:cfg.key }).catch(()=>{});
+    registros = registros.filter(x=>x!==r); salvarRegistros();
+    if(remoto()) post({ acao:'excluir', id:r.id, key:senha }).catch(()=>{});
     renderAdmin(); toast('Registro excluído.');
   }
 });
@@ -586,9 +681,9 @@ $('#tbody').addEventListener('click', async e => {
 function montarMensagem(r){
   const vars = {
     nome: r.nome, nome_completo: `${r.nome} ${r.sobrenome}`, valor: brl(r.valor),
-    mes: mesNome(), informativo: cfg.informativo.trim(), pix: cfg.pix.trim()
+    mes: mesNome(), informativo: (cfg.informativo||'').trim(), pix: (cfg.pix||'').trim()
   };
-  return cfg.template.split('\n').filter(linha => {
+  return (cfg.template||'').split('\n').filter(linha => {
     const usadas = [...linha.matchAll(/\{(\w+)\}/g)].map(m=>m[1]).filter(k => k in vars);
     return !usadas.some(k => !vars[k]);
   }).map(l => l.replace(/\{(\w+)\}/g, (m,k) => k in vars ? vars[k] : m))
@@ -600,18 +695,30 @@ function linkWhatsApp(r){
 }
 function abrirWhatsApp(r){ window.open(linkWhatsApp(r), '_blank', 'noopener'); }
 async function marcarEnviado(r){
-  r.ultimoEnvio = mesKey(); salvarLocal();
-  if(remoto()) post({ acao:'enviado', id:r.id, mes:r.ultimoEnvio, key:cfg.key }).catch(()=>{});
+  r.ultimoEnvio = mesKey(); salvarRegistros();
+  if(remoto()) post({ acao:'enviado', id:r.id, mes:r.ultimoEnvio, key:senha }).catch(()=>{});
 }
 function renderPreview(){
-  const ex = [...registros].sort((a,b)=>(a.nome+a.sobrenome).localeCompare(b.nome+b.sobrenome,'pt-BR'))[0]
-          || { nome:'Maria', sobrenome:'Silva', valor:50 };
+  const ex = [...registros].sort(porNome)[0] || { nome:'Maria', sobrenome:'Silva', valor:50 };
   $('#preview').textContent = montarMensagem(ex);
 }
+
+/* salvamento automático da mensagem e da chave Pix */
 let tSave;
+function status(txt, cls){ const s = $('#save-status'); s.textContent = txt; s.className = 'save-status ' + (cls||''); }
+function agendarSalvar(){
+  salvarCfgLocal();
+  if(!remoto()){ status('Salvo neste aparelho ✓','ok'); return; }
+  status('Salvando…'); clearTimeout(tSave);
+  tSave = setTimeout(async () => {
+    try{ await post({ acao:'config', key:senha, config:{ template:cfg.template, informativo:cfg.informativo, pix:cfg.pix } }); status('Salvo na planilha ✓','ok'); }
+    catch(e){ status('Não salvou — verifique a internet','err'); }
+  }, 1200);
+}
 ['template','informativo'].forEach(id => $('#'+id).addEventListener('input', () => {
-  cfg[id] = $('#'+id).value; renderPreview(); clearTimeout(tSave); tSave = setTimeout(salvarCfg, 400);
+  cfg[id] = $('#'+id).value; renderPreview(); agendarSalvar();
 }));
+$('#cfg-pix').addEventListener('input', () => { cfg.pix = $('#cfg-pix').value.trim(); renderPreview(); agendarSalvar(); });
 $$('#vars code').forEach(c => c.addEventListener('click', () => {
   const ta = $('#template'), s = ta.selectionStart, e = ta.selectionEnd;
   ta.value = ta.value.slice(0,s) + c.textContent + ta.value.slice(e);
@@ -622,10 +729,10 @@ $$('#vars code').forEach(c => c.addEventListener('click', () => {
 /* ------------------------- fila mensal ------------------------- */
 let fila = [], idx = 0;
 $('#btn-todos').addEventListener('click', () => {
-  fila = registros.filter(r => !enviadoEsteMes(r)).sort((a,b)=>(a.nome+a.sobrenome).localeCompare(b.nome+b.sobrenome,'pt-BR'));
+  fila = registros.filter(r => !enviadoEsteMes(r)).sort(porNome);
   idx = 0; $('#q-mes').textContent = mesNome();
   if(!fila.length){ toast(registros.length ? 'Todos já receberam o lembrete deste mês. 🙌' : 'Ainda não há registros.'); return; }
-  if(!cfg.informativo.trim() && !confirm('O informativo do mês está vazio. Enviar mesmo assim?')) return;
+  if(!(cfg.informativo||'').trim() && !confirm('O informativo do mês está vazio. Enviar mesmo assim?')) return;
   renderFila(); $('#dlg-fila').showModal();
 });
 function renderFila(){
@@ -656,16 +763,17 @@ $('#dlg-fila').addEventListener('click', async e => {
 
 /* ------------------------- configurações e dados ------------------------- */
 $('#btn-salvar-cfg').addEventListener('click', () => {
-  cfg.pix = $('#cfg-pix').value.trim(); cfg.key = $('#cfg-key').value.trim();
+  cfg.pix = $('#cfg-pix').value.trim(); agendarSalvar();
   const np = $('#cfg-pin').value.trim();
-  if(np){ if(np.length<4){ toast('O PIN precisa ter pelo menos 4 dígitos.'); return; } cfg.pin = np; $('#cfg-pin').value=''; }
-  salvarCfg(); renderPreview(); toast('Configurações salvas.');
+  if(!remoto() && np){
+    if(np.length<4){ toast('O PIN precisa ter pelo menos 4 caracteres.'); return; }
+    pinLocal = np; LS.set('pin', np); $('#cfg-pin').value='';
+  }
+  toast('Configurações salvas.');
 });
-$('#btn-recarregar').addEventListener('click', async () => {
+$('#btn-recarregar').addEventListener('click', () => {
   if(!remoto()){ registros = LS.get('registros', []); renderAdmin(); toast('Registros atualizados.'); return; }
-  cfg.key = $('#cfg-key').value.trim(); salvarCfg();
-  try{ if(await carregarRemoto()){ renderAdmin(); toast('Registros atualizados da planilha.'); } }
-  catch(e){ toast('Não foi possível acessar a planilha.'); }
+  atualizar(false);
 });
 function baixar(nome, conteudo, tipo){
   const a = document.createElement('a');
@@ -675,27 +783,36 @@ function baixar(nome, conteudo, tipo){
 $('#btn-csv').addEventListener('click', () => {
   const cel = v => `"${String(v).replace(/"/g,'""')}"`;
   const linhas = [['Nome','Sobrenome','Telefone','Valor mensal','Data de cadastro','Último lembrete'].map(cel).join(';')]
-    .concat(registros.map(r => [r.nome, r.sobrenome, fmtTel(r.telefone), String(r.valor.toFixed(2)).replace('.',','), fmtData(r.criadoEm), r.ultimoEnvio||''].map(cel).join(';')));
+    .concat([...registros].sort(porNome).map(r => [r.nome, r.sobrenome, fmtTel(r.telefone), (Number(r.valor)||0).toFixed(2).replace('.',','), fmtData(r.criadoEm), r.ultimoEnvio||''].map(cel).join(';')));
   baixar(`ofertantes-missoes-${mesKey()}.csv`, '﻿'+linhas.join('\r\n'), 'text/csv;charset=utf-8');
 });
 $('#btn-backup').addEventListener('click', () => {
-  baixar(`backup-missoes-${new Date().toISOString().slice(0,10)}.json`, JSON.stringify({ registros, cfg:{...cfg, key:''} }, null, 2), 'application/json');
+  baixar(`backup-missoes-${new Date().toISOString().slice(0,10)}.json`,
+    JSON.stringify({ registros, cfg:{ template:cfg.template, informativo:cfg.informativo, pix:cfg.pix } }, null, 2), 'application/json');
 });
 $('#file-restore').addEventListener('change', async e => {
   const f = e.target.files[0]; if(!f) return;
   try{
     const j = JSON.parse(await f.text());
     if(!Array.isArray(j.registros)) throw 0;
-    if(!confirm(`Restaurar ${j.registros.length} registro(s)? Os registros atuais deste aparelho serão substituídos.`)) return;
-    registros = j.registros; salvarLocal();
-    if(j.cfg){ cfg = { ...cfg, template: j.cfg.template||cfg.template, informativo: j.cfg.informativo??cfg.informativo, pix: j.cfg.pix??cfg.pix }; salvarCfg(); }
-    abrirAdmin(); toast('Backup restaurado.');
+    const novos = j.registros.map(normalizar);
+    if(remoto()){
+      if(!confirm(`Enviar ${novos.length} registro(s) do backup para a planilha? Os que já existem não serão duplicados.`)) return;
+      await post({ acao:'importar', key:senha, registros: novos });
+      await new Promise(r=>setTimeout(r,1500)); await sincronizar();
+    } else {
+      if(!confirm(`Restaurar ${novos.length} registro(s)? Os registros atuais deste aparelho serão substituídos.`)) return;
+      registros = novos; salvarRegistros();
+    }
+    if(j.cfg){ ['template','informativo','pix'].forEach(k => { if(j.cfg[k]!=null) cfg[k]=j.cfg[k]; }); agendarSalvar(); }
+    preencherCampos(); renderBanner(); renderAdmin(); toast('Backup restaurado.');
   }catch(err){ toast('Arquivo de backup inválido.'); }
   e.target.value='';
 });
 
 /* abre direto na aba de registros com ?admin */
 if(new URLSearchParams(location.search).has('admin')) document.querySelector('[data-tab="registros"]').click();
+
 </script>
 </body>
 </html>
